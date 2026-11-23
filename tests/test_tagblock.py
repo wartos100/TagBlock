@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.tagblock import async_setup_entry, async_unload_entry
 from custom_components.tagblock.const import (
     ACTION_ADD_GROCERY,
     ACTION_ALARMO_ARM_AWAY,
@@ -28,11 +28,9 @@ async def test_store_seeds_and_crud(hass):
     store = TagBlockStore(hass)
     await store.async_load()
 
-    # Initial 2 migrated tags are present
     tags = store.get_tags()
     assert len(tags) == 2
 
-    # Save a new multi-action combo tag
     saved = await store.async_save_tag(
         {
             "tag_id": "AA-BB-CC-DD",
@@ -58,7 +56,6 @@ async def test_store_seeds_and_crud(hass):
     assert len(saved["actions"]) == 2
     assert len(store.get_tags()) == 3
 
-    # Save per-reader room defaults
     await store.async_save_reader_config(
         "reader_kitchen",
         {
@@ -71,7 +68,6 @@ async def test_store_seeds_and_crud(hass):
         == "media_player.kitchen_speakers"
     )
 
-    # Delete tag
     assert await store.async_delete_tag(saved["id"]) is True
     assert len(store.get_tags()) == 2
 
@@ -110,17 +106,31 @@ async def test_room_aware_music_and_hold_to_play_remove(hass):
         calls.append((domain, service, dict(data or {})))
 
     with patch.object(hass.services, "async_call", side_effect=_fake_call):
-        # Tap in the kitchen -> plays on kitchen speakers
         await engine.async_execute_tag(tag, device_id="reader_kitchen")
-        assert ("media_player", "volume_set", {"entity_id": "media_player.kitchen_speakers", "volume_level": 0.4}) in calls
-        assert ("music_assistant", "play_media", {"entity_id": "media_player.kitchen_speakers", "media_id": "spotify://playlist/jazz", "enqueue": "replace"}) in calls
+        assert (
+            "media_player",
+            "volume_set",
+            {"entity_id": "media_player.kitchen_speakers", "volume_level": 0.4},
+        ) in calls
+        assert (
+            "music_assistant",
+            "play_media",
+            {
+                "entity_id": "media_player.kitchen_speakers",
+                "media_id": "spotify://playlist/jazz",
+                "enqueue": "replace",
+            },
+        ) in calls
 
-        # Lift tag off reader -> pauses kitchen speakers
         calls.clear()
         engine.start()
         hass.bus.async_fire("esphome.tagblock_tag_removed", {"tag_id": "11-22-33-44"})
         await hass.async_block_till_done()
-        assert ("media_player", "media_pause", {"entity_id": "media_player.kitchen_speakers"}) in calls
+        assert (
+            "media_player",
+            "media_pause",
+            {"entity_id": "media_player.kitchen_speakers"},
+        ) in calls
         engine.stop()
 
 
@@ -172,9 +182,21 @@ async def test_combo_alarmo_grocery_and_timer(hass):
     with patch.object(hass.services, "async_call", side_effect=_fake_call):
         await engine.async_execute_tag(tag)
 
-    assert ("todo", "add_item", {"entity_id": "todo.boodschappen", "item": "Brood"}) in calls
-    assert ("alarmo", "arm", {"entity_id": "alarm_control_panel.home", "mode": "away", "code": "1234"}) in calls
-    assert ("alarmo", "disarm", {"entity_id": "alarm_control_panel.home"}) in calls
+    assert (
+        "todo",
+        "add_item",
+        {"entity_id": "todo.boodschappen", "item": "Brood"},
+    ) in calls
+    assert (
+        "alarmo",
+        "arm",
+        {"entity_id": "alarm_control_panel.home", "mode": "away", "code": "1234"},
+    ) in calls
+    assert (
+        "alarmo",
+        "disarm",
+        {"entity_id": "alarm_control_panel.home"},
+    ) in calls
     assert len(store.active_timers) == 1
 
     timer_id = next(iter(store.active_timers))
@@ -183,22 +205,21 @@ async def test_combo_alarmo_grocery_and_timer(hass):
 
 
 async def test_setup_and_unload_entry(hass):
-    """Verify TagBlock registers static paths, sidebar panel, and unloads cleanly against HA Core."""
+    """Verify TagBlock registers static paths, sidebar panel, and unloads cleanly."""
     entry = MockConfigEntry(domain=DOMAIN, title="TagBlock", data={})
     entry.add_to_hass(hass)
 
+    hass.http = MagicMock()
+    hass.http.async_register_static_paths = AsyncMock()
+
     with (
-        patch.object(hass.http, "async_register_static_paths", new=AsyncMock()) as mock_static,
         patch("custom_components.tagblock.frontend.async_register_built_in_panel") as mock_reg_panel,
         patch("custom_components.tagblock.frontend.async_remove_panel") as mock_rm_panel,
     ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
+        assert await async_setup_entry(hass, entry) is True
         assert DOMAIN in hass.data
-        mock_static.assert_awaited_once()
+        hass.http.async_register_static_paths.assert_awaited_once()
         mock_reg_panel.assert_called_once()
 
-        assert await hass.config_entries.async_unload(entry.entry_id)
-        await hass.async_block_till_done()
+        assert await async_unload_entry(hass, entry) is True
         mock_rm_panel.assert_called_once()
