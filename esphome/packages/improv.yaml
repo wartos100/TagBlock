@@ -1,0 +1,10 @@
+# =============================================================================
+# Optional Improv Wi-Fi Provisioning Package (Serial + BLE)
+# Enables browser-based flashing & Wi-Fi onboarding via ESP Web Tools and the
+# Home Assistant Companion App without hardcoding Wi-Fi credentials.
+# =============================================================================
+
+improv_serial:
+
+esp32_improv:
+  authorizer: none

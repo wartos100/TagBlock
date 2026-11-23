@@ -1,0 +1,30 @@
+# =============================================================================
+# TagBlock — Example Room Reader Configuration
+#
+# Copy this file for each room (e.g. living-room.yaml, kitchen.yaml, office.yaml),
+# adjust `name`, `friendly_name`, and GPIO pins, and pick the optional packages
+# that match your hardware.
+# =============================================================================
+
+substitutions:
+  name: tagblock-room
+  friendly_name: TagBlock Room
+  board: esp32dev
+  i2c_sda_pin: GPIO21
+  i2c_scl_pin: GPIO22
+  buzzer_pin: GPIO25
+  led_pin: GPIO26
+  led_count: "12"
+  # Optional rotary encoder pins (only needed if you include controls_rotary.yaml)
+  rotary_pin_a: GPIO32
+  rotary_pin_b: GPIO33
+  rotary_btn_pin: GPIO27
+
+packages:
+  base: !include packages/tagblock_base.yaml
+  # Pick ONE LED package: `led_binary.yaml` (single LED) or `led_ws2812.yaml` (RGB ring/strip)
+  led: !include packages/led_ws2812.yaml
+  # Optional: physical volume knob + play/pause/next button
+  # controls: !include packages/controls_rotary.yaml
+  # Optional: Improv Wi-Fi onboarding via browser (ESP Web Tools) / BLE
+  # improv: !include packages/improv.yaml

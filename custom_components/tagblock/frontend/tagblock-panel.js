@@ -7,10 +7,11 @@ const ACTIONS = [
     icon: "🎵",
     targetKind: "media_players",
     supportsReaderDefault: true,
-    valueLabel: "Spotify Link, URI, or Search Query",
-    valuePlaceholder: "https://open.spotify.com/playlist/... or Daft Punk Discovery",
-    hint: "Paste a Spotify link, URI, or song/playlist name. Choose 'Reader's Room (Auto)' to play on whichever room's reader you tap.",
+    valueLabel: "Media URI, Link, or Search Query",
+    valuePlaceholder: "Search Music Assistant below or paste a Spotify link/URI...",
+    hint: "Search Music Assistant below or paste any Spotify/media URI. Choose 'Reader's Room (Auto)' to play on whichever room's reader you tap.",
     showVolume: true,
+    showMusicOpts: true,
     showValue: true,
   },
   {
@@ -23,6 +24,7 @@ const ACTIONS = [
     valuePlaceholder: "10",
     hint: "Starts a countdown timer and sends a Companion App notification (plus a buzzer chime on the reader) when done.",
     showVolume: false,
+    showMusicOpts: false,
     showValue: true,
   },
   {
@@ -35,6 +37,7 @@ const ACTIONS = [
     valuePlaceholder: "Dinner is ready!",
     hint: "Sends a push notification to the selected phone(s). The tag's Friendly Name is used as the title.",
     showVolume: false,
+    showMusicOpts: false,
     showValue: true,
   },
   {
@@ -43,10 +46,11 @@ const ACTIONS = [
     icon: "🛒",
     targetKind: "todo_lists",
     supportsReaderDefault: true,
-    valueLabel: "Grocery Item",
-    valuePlaceholder: "Melk",
-    hint: "Adds the item to the selected shopping list (defaults to the tag's Friendly Name if left blank).",
+    valueLabel: "Item Name",
+    valuePlaceholder: "Milk",
+    hint: "Adds the item to the selected to-do/shopping list (defaults to the tag's Friendly Name if left blank).",
     showVolume: false,
+    showMusicOpts: false,
     showValue: true,
   },
   {
@@ -59,6 +63,7 @@ const ACTIONS = [
     valuePlaceholder: "Leave blank if no PIN is required",
     hint: "Arms Alarmo in Away mode.",
     showVolume: false,
+    showMusicOpts: false,
     showValue: true,
     isSecret: true,
   },
@@ -72,6 +77,7 @@ const ACTIONS = [
     valuePlaceholder: "Leave blank if no PIN is required",
     hint: "Arms Alarmo in Home mode.",
     showVolume: false,
+    showMusicOpts: false,
     showValue: true,
     isSecret: true,
   },
@@ -85,6 +91,7 @@ const ACTIONS = [
     valuePlaceholder: "Leave blank if no PIN is required",
     hint: "Arms Alarmo in Night mode.",
     showVolume: false,
+    showMusicOpts: false,
     showValue: true,
     isSecret: true,
   },
@@ -98,6 +105,7 @@ const ACTIONS = [
     valuePlaceholder: "Leave blank if no PIN is required",
     hint: "Disarms Alarmo.",
     showVolume: false,
+    showMusicOpts: false,
     showValue: true,
     isSecret: true,
   },
@@ -111,6 +119,7 @@ const ACTIONS = [
     valuePlaceholder: "",
     hint: "Runs any Home Assistant Script or activates a Scene.",
     showVolume: false,
+    showMusicOpts: false,
     showValue: false,
   },
   {
@@ -123,6 +132,7 @@ const ACTIONS = [
     valuePlaceholder: "",
     hint: "Pauses playback on the selected speaker (or whichever room's reader you tap).",
     showVolume: false,
+    showMusicOpts: false,
     showValue: false,
   },
 ];
@@ -164,10 +174,14 @@ class TagBlockPanel extends HTMLElement {
       alarm_panels: [],
       scripts_and_scenes: [],
       readers: [],
+      has_music_assistant: false,
     };
     this._search = "";
     this._editing = null;
     this._isNew = false;
+    this._maSearchQuery = {};
+    this._maSearchResults = {};
+    this._maSearching = {};
     this._toast = "";
     this._toastTimer = null;
     this._unsub = null;
@@ -296,16 +310,22 @@ class TagBlockPanel extends HTMLElement {
       target: opts[0]?.value || "",
       value: "",
       volume: 0,
+      shuffle: false,
+      radio_mode: false,
+      enqueue: "replace",
     };
   }
 
   _openNewTag(prefillTagId = "") {
     this._isNew = true;
+    this._maSearchQuery = {};
+    this._maSearchResults = {};
     this._editing = {
       id: "",
       tag_id: prefillTagId,
       name: "",
       on_remove: "keep_running",
+      retap_mode: "toggle_pause",
       reader_filter: "",
       actions: [this._makeDefaultAction("play_music")],
     };
@@ -315,12 +335,20 @@ class TagBlockPanel extends HTMLElement {
 
   _openEditTag(tag) {
     this._isNew = false;
+    this._maSearchQuery = {};
+    this._maSearchResults = {};
     this._editing = {
       ...tag,
+      retap_mode: tag.retap_mode || "restart",
       actions: (tag.actions && tag.actions.length > 0
         ? tag.actions
         : [this._makeDefaultAction()]
-      ).map((a) => ({ ...a })),
+      ).map((a) => ({
+        shuffle: false,
+        radio_mode: false,
+        enqueue: "replace",
+        ...a,
+      })),
     };
     this._render();
   }
@@ -328,7 +356,31 @@ class TagBlockPanel extends HTMLElement {
   _closeEditor() {
     this._editing = null;
     this._isNew = false;
+    this._maSearchResults = {};
     this._render();
+  }
+
+  async _searchMedia(stepIdx) {
+    const q = (this._maSearchQuery[stepIdx] || "").trim();
+    if (!q) return;
+    this._maSearching[stepIdx] = true;
+    this._render();
+    try {
+      const res = await this._hass.callWS({
+        type: "tagblock/search_media",
+        query: q,
+      });
+      this._maSearchResults[stepIdx] = res?.items || [];
+      if (this._maSearchResults[stepIdx].length === 0) {
+        this._showToast(`No Music Assistant results for "${q}".`);
+      }
+    } catch (err) {
+      console.error(err);
+      this._showToast("Music Assistant search failed.");
+    } finally {
+      this._maSearching[stepIdx] = false;
+      this._render();
+    }
   }
 
   async _saveEditing() {
@@ -429,7 +481,6 @@ class TagBlockPanel extends HTMLElement {
   _renderReadersTabOnly() {
     const container = this.shadowRoot?.querySelector("#readers-grid");
     if (!container) return;
-    // Avoid clobbering an open dropdown if user is actively editing a select
     if (this.shadowRoot.activeElement?.tagName === "SELECT") return;
     container.innerHTML = this._buildReadersCardsHtml();
     this._bindReaderEvents(container);
@@ -471,7 +522,7 @@ class TagBlockPanel extends HTMLElement {
           </div>
 
           <div class="room-defaults">
-            <div class="room-defaults-title">📍 Room Defaults (used by "Reader's Room" tags)</div>
+            <div class="room-defaults-title">📍 Room Defaults (used by "Reader's Room" tags & rotary knob)</div>
             <div class="room-defaults-grid">
               <div>
                 <label class="mini-label">Default Speaker</label>
@@ -486,7 +537,7 @@ class TagBlockPanel extends HTMLElement {
                 </select>
               </div>
               <div>
-                <label class="mini-label">Default Grocery List</label>
+                <label class="mini-label">Default To-Do List</label>
                 <select class="form-select compact" data-reader-todo="${escapeHtml(reader.device_id)}">
                   <option value="">Not set</option>
                   ${todos
@@ -564,7 +615,7 @@ class TagBlockPanel extends HTMLElement {
         <div class="add-reader-icon">📡</div>
         <div class="reader-title">Multi-Reader Ready</div>
         <p class="muted">
-          Add more ESPHome TagBlock readers (Kitchen, Bedroom, Workshop…) and they will automatically appear here with their own room defaults.
+          Adopt additional ESPHome TagBlock readers in Home Assistant and they will automatically appear here with their own room defaults.
         </p>
         <button class="btn secondary" id="btn-refresh-readers">Refresh Readers</button>
       </div>
@@ -685,7 +736,7 @@ class TagBlockPanel extends HTMLElement {
         .container { max-width: 1280px; margin: 0 auto; padding: 20px; }
         .split-layout {
           display: grid;
-          grid-template-columns: minmax(320px, 1fr) minmax(380px, 1.2fr);
+          grid-template-columns: minmax(320px, 1fr) minmax(380px, 1.25fr);
           gap: 20px;
           align-items: start;
         }
@@ -820,6 +871,57 @@ class TagBlockPanel extends HTMLElement {
           font-size: 13px;
           font-weight: 600;
           color: var(--secondary-text-color);
+        }
+        .ma-search-row { display: flex; gap: 8px; }
+        .ma-results {
+          margin-top: 8px;
+          max-height: 220px;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .ma-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 10px;
+          border-radius: 9px;
+          border: 1px solid var(--divider-color, rgba(255,255,255,0.1));
+          background: var(--card-background-color);
+          cursor: pointer;
+          text-align: left;
+          color: var(--primary-text-color);
+        }
+        .ma-item:hover { border-color: var(--primary-color); }
+        .ma-thumb {
+          width: 34px;
+          height: 34px;
+          border-radius: 6px;
+          object-fit: cover;
+          background: rgba(127,127,127,0.2);
+          flex-shrink: 0;
+        }
+        .ma-item-info { flex: 1; min-width: 0; }
+        .ma-item-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ma-item-sub { font-size: 11px; color: var(--secondary-text-color); }
+        .music-opts-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 8px;
+          align-items: center;
+          margin-top: 8px;
+        }
+        .check-pill {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
+          padding: 8px 10px;
+          border-radius: 9px;
+          border: 1px solid var(--divider-color, rgba(255,255,255,0.14));
+          background: var(--primary-background-color, rgba(0,0,0,0.1));
+          cursor: pointer;
         }
         .hint-box {
           padding: 8px 10px;
@@ -1001,6 +1103,7 @@ class TagBlockPanel extends HTMLElement {
                             first.action_type === "play_music" && first.volume > 0
                               ? ` · ${first.volume}%`
                               : "";
+                          const shufTxt = first.shuffle ? " · 🔀" : "";
                           const extraTxt = steps.length > 1 ? ` · +${steps.length - 1} more` : "";
                           const remTxt =
                             tag.on_remove === "pause_music"
@@ -1014,7 +1117,7 @@ class TagBlockPanel extends HTMLElement {
                               <div class="tag-info">
                                 <div class="tag-name">${escapeHtml(tag.name)}</div>
                                 <div class="tag-meta">
-                                  ${escapeHtml(meta.label)} · ${escapeHtml(targetLbl)}${escapeHtml(volTxt)}${escapeHtml(extraTxt)}${escapeHtml(remTxt)}
+                                  ${escapeHtml(meta.label)} · ${escapeHtml(targetLbl)}${escapeHtml(volTxt)}${shufTxt}${escapeHtml(extraTxt)}${escapeHtml(remTxt)}
                                 </div>
                                 <div class="tag-uid">${escapeHtml(tag.tag_id)}</div>
                               </div>
@@ -1057,13 +1160,14 @@ class TagBlockPanel extends HTMLElement {
 
                     <div class="form-group">
                       <label class="form-label"><span>Friendly Name</span></label>
-                      <input class="form-input" id="f-name" type="text" placeholder="e.g. Morning Jazz, Cooking Mode, Melk" value="${escapeHtml(this._editing.name)}" />
+                      <input class="form-input" id="f-name" type="text" placeholder="e.g. Morning Jazz, Cooking Mode, Pasta Timer" value="${escapeHtml(this._editing.name)}" />
                     </div>
 
                     ${this._editing.actions
                       .map((step, idx) => {
                         const meta = ACTION_MAP[step.action_type] || ACTIONS[0];
                         const opts = this._getTargetOptions(step.action_type);
+                        const maRes = this._maSearchResults[idx] || [];
                         return `
                           <div class="action-block" data-action-idx="${idx}">
                             <div class="action-block-head">
@@ -1104,6 +1208,37 @@ class TagBlockPanel extends HTMLElement {
                             </div>
 
                             ${
+                              meta.showMusicOpts && this._targets.has_music_assistant
+                                ? `<div class="form-group">
+                                     <label class="form-label"><span>🔍 Search Music Assistant</span></label>
+                                     <div class="ma-search-row">
+                                       <input class="form-input" data-ma-input="${idx}" type="text" placeholder="Search playlist, album, artist, or track..." value="${escapeHtml(this._maSearchQuery[idx] || "")}" />
+                                       <button class="btn secondary" data-ma-search="${idx}">${this._maSearching[idx] ? "..." : "Search"}</button>
+                                     </div>
+                                     ${
+                                       maRes.length > 0
+                                         ? `<div class="ma-results">
+                                              ${maRes
+                                                .map(
+                                                  (item, rIdx) => `
+                                                <button class="ma-item" data-ma-pick-step="${idx}" data-ma-pick-idx="${rIdx}">
+                                                  ${item.image ? `<img class="ma-thumb" src="${escapeHtml(item.image)}" alt="" />` : `<div class="ma-thumb"></div>`}
+                                                  <div class="ma-item-info">
+                                                    <div class="ma-item-title">${escapeHtml(item.name)}</div>
+                                                    <div class="ma-item-sub">${escapeHtml(item.media_type.toUpperCase())}${item.artist ? ` · ${escapeHtml(item.artist)}` : ""}</div>
+                                                  </div>
+                                                </button>
+                                              `
+                                                )
+                                                .join("")}
+                                            </div>`
+                                         : ""
+                                     }
+                                   </div>`
+                                : ""
+                            }
+
+                            ${
                               meta.showValue
                                 ? `<div class="form-group">
                                      <label class="form-label"><span>${escapeHtml(meta.valueLabel)}</span></label>
@@ -1123,6 +1258,26 @@ class TagBlockPanel extends HTMLElement {
                                    </div>`
                                 : ""
                             }
+
+                            ${
+                              meta.showMusicOpts
+                                ? `<div class="music-opts-row">
+                                     <label class="check-pill">
+                                       <input type="checkbox" data-step-shuffle="${idx}" ${step.shuffle ? "checked" : ""} />
+                                       <span>🔀 Shuffle</span>
+                                     </label>
+                                     <label class="check-pill">
+                                       <input type="checkbox" data-step-radio="${idx}" ${step.radio_mode ? "checked" : ""} />
+                                       <span>📻 Radio</span>
+                                     </label>
+                                     <select class="form-select compact" data-step-enqueue="${idx}" title="Queue Mode">
+                                       <option value="replace" ${step.enqueue === "replace" ? "selected" : ""}>Replace Queue</option>
+                                       <option value="add" ${step.enqueue === "add" ? "selected" : ""}>Add to Queue</option>
+                                       <option value="next" ${step.enqueue === "next" ? "selected" : ""}>Play Next</option>
+                                     </select>
+                                   </div>`
+                                : ""
+                            }
                           </div>
                         `;
                       })
@@ -1131,6 +1286,18 @@ class TagBlockPanel extends HTMLElement {
                     <div class="form-group">
                       <button class="btn secondary" id="btn-add-step" style="width:100%;">+ Add Another Action (Combo)</button>
                     </div>
+
+                    ${
+                      hasMusic
+                        ? `<div class="form-group">
+                             <label class="form-label"><span>When Same Tag Is Tapped Again</span></label>
+                             <select class="form-select" id="f-retap">
+                               <option value="toggle_pause" ${this._editing.retap_mode === "toggle_pause" ? "selected" : ""}>Toggle Play / Pause</option>
+                               <option value="restart" ${this._editing.retap_mode === "restart" ? "selected" : ""}>Restart from Beginning</option>
+                             </select>
+                           </div>`
+                        : ""
+                    }
 
                     ${
                       hasMusicOrTimer
@@ -1259,6 +1426,7 @@ class TagBlockPanel extends HTMLElement {
           btn.addEventListener("click", () => {
             const idx = Number(btn.getAttribute("data-remove-step"));
             this._editing.actions.splice(idx, 1);
+            delete this._maSearchResults[idx];
             this._render();
           });
         });
@@ -1267,13 +1435,8 @@ class TagBlockPanel extends HTMLElement {
           sel.addEventListener("change", (e) => {
             const idx = Number(sel.getAttribute("data-step-action"));
             const nextType = e.target.value;
-            const opts = this._getTargetOptions(nextType);
-            this._editing.actions[idx] = {
-              action_type: nextType,
-              target: opts[0]?.value || "",
-              value: "",
-              volume: 0,
-            };
+            this._editing.actions[idx] = this._makeDefaultAction(nextType);
+            delete this._maSearchResults[idx];
             this._render();
           });
         });
@@ -1302,6 +1465,65 @@ class TagBlockPanel extends HTMLElement {
           });
         });
 
+        root.querySelectorAll("[data-step-shuffle]").forEach((chk) => {
+          chk.addEventListener("change", (e) => {
+            const idx = Number(chk.getAttribute("data-step-shuffle"));
+            this._editing.actions[idx].shuffle = e.target.checked;
+          });
+        });
+
+        root.querySelectorAll("[data-step-radio]").forEach((chk) => {
+          chk.addEventListener("change", (e) => {
+            const idx = Number(chk.getAttribute("data-step-radio"));
+            this._editing.actions[idx].radio_mode = e.target.checked;
+          });
+        });
+
+        root.querySelectorAll("[data-step-enqueue]").forEach((sel) => {
+          sel.addEventListener("change", (e) => {
+            const idx = Number(sel.getAttribute("data-step-enqueue"));
+            this._editing.actions[idx].enqueue = e.target.value;
+          });
+        });
+
+        root.querySelectorAll("[data-ma-input]").forEach((inp) => {
+          inp.addEventListener("input", (e) => {
+            const idx = Number(inp.getAttribute("data-ma-input"));
+            this._maSearchQuery[idx] = e.target.value;
+          });
+          inp.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              this._searchMedia(Number(inp.getAttribute("data-ma-input")));
+            }
+          });
+        });
+
+        root.querySelectorAll("[data-ma-search]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            this._searchMedia(Number(btn.getAttribute("data-ma-search")));
+          });
+        });
+
+        root.querySelectorAll("[data-ma-pick-step]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const stepIdx = Number(btn.getAttribute("data-ma-pick-step"));
+            const resIdx = Number(btn.getAttribute("data-ma-pick-idx"));
+            const picked = (this._maSearchResults[stepIdx] || [])[resIdx];
+            if (!picked) return;
+            this._editing.actions[stepIdx].value = picked.uri;
+            if (!this._editing.name.trim()) {
+              this._editing.name = picked.name;
+            }
+            this._maSearchResults[stepIdx] = [];
+            this._showToast(`Selected "${picked.name}"`);
+            this._render();
+          });
+        });
+
+        root.querySelector("#f-retap")?.addEventListener("change", (e) => {
+          this._editing.retap_mode = e.target.value;
+        });
         root.querySelector("#f-remove")?.addEventListener("change", (e) => {
           this._editing.on_remove = e.target.value;
         });

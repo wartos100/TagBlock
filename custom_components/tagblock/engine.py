@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import logging
+import time
 from typing import Any
 import uuid
 
@@ -24,6 +25,8 @@ from .const import (
     ACTION_START_TIMER,
     REMOVE_CANCEL_TIMER,
     REMOVE_PAUSE_MUSIC,
+    RETAP_TOGGLE_PAUSE,
+    SCAN_DEBOUNCE_SECONDS,
     TARGET_READER_DEFAULT,
 )
 from .store import TagBlockStore
@@ -32,7 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class TagBlockEngine:
-    """Listens to NFC tag events and executes room-aware multi-action routines."""
+    """Listens to NFC tag & hardware control events and executes room-aware routines."""
 
     def __init__(self, hass: HomeAssistant, store: TagBlockStore) -> None:
         """Initialize the engine."""
@@ -40,8 +43,12 @@ class TagBlockEngine:
         self.store = store
         self._unsubs: list[CALLBACK_TYPE] = []
         self._timer_cancels: dict[str, CALLBACK_TYPE] = {}
-        # Tracks which resolved speaker(s) a placed tag started, for hold-to-play pause
+        # Tracks which resolved speaker(s) a placed tag started, for hold-to-play & re-tap toggle
         self._active_tag_speakers: dict[str, list[str]] = {}
+        # Tracks last played tag per speaker for re-tap Play/Pause toggling
+        self._speaker_last_tag: dict[str, str] = {}
+        # Debounce map: (tag_id, device_id) -> monotonic timestamp
+        self._last_scan_mono: dict[tuple[str, str], float] = {}
 
     def start(self) -> None:
         """Register Home Assistant event listeners."""
@@ -51,6 +58,11 @@ class TagBlockEngine:
         self._unsubs.append(
             self.hass.bus.async_listen(
                 "esphome.tagblock_tag_removed", self._handle_tag_removed
+            )
+        )
+        self._unsubs.append(
+            self.hass.bus.async_listen(
+                "esphome.tagblock_control", self._handle_reader_control
             )
         )
 
@@ -63,6 +75,8 @@ class TagBlockEngine:
             cancel()
         self._timer_cancels.clear()
         self._active_tag_speakers.clear()
+        self._speaker_last_tag.clear()
+        self._last_scan_mono.clear()
         self.store.active_timers.clear()
 
     def _resolve_device_id_by_name(self, device_name: str | None) -> str | None:
@@ -84,11 +98,11 @@ class TagBlockEngine:
         reader_cfg = self.store.get_reader_config(device_id)
         if reader_cfg.get("default_speaker"):
             return reader_cfg["default_speaker"]
-        # Fallback to first configured reader default or living_speakers
         for cfg in self.store.get_reader_configs().values():
             if cfg.get("default_speaker"):
                 return cfg["default_speaker"]
-        return "media_player.living_speakers"
+        all_players = self.hass.states.async_all("media_player")
+        return all_players[0].entity_id if all_players else ""
 
     def _resolve_todo(self, target: str, device_id: str | None) -> str:
         """Resolve 'reader_default' to the scanning reader's default grocery list."""
@@ -100,7 +114,8 @@ class TagBlockEngine:
         for cfg in self.store.get_reader_configs().values():
             if cfg.get("default_todo"):
                 return cfg["default_todo"]
-        return "todo.boodschappen"
+        all_todos = self.hass.states.async_all("todo")
+        return all_todos[0].entity_id if all_todos else ""
 
     async def _async_call_reader_feedback(
         self, device_id: str | None, action_suffix: str
@@ -134,11 +149,18 @@ class TagBlockEngine:
             return
 
     async def _handle_tag_scanned(self, event: Event) -> None:
-        """Handle Home Assistant's native tag_scanned event."""
+        """Handle Home Assistant's native tag_scanned event with debounce."""
         tag_id = str(event.data.get("tag_id") or "").strip()
         device_id = event.data.get("device_id")
         if not tag_id:
             return
+
+        # Debounce rapid duplicate scans from the same reader
+        key = (tag_id, str(device_id or ""))
+        now = time.monotonic()
+        if now - self._last_scan_mono.get(key, 0.0) < SCAN_DEBOUNCE_SECONDS:
+            return
+        self._last_scan_mono[key] = now
 
         matched = self.store.find_by_tag_id(tag_id, device_id)
         self.store.set_last_scanned(
@@ -187,6 +209,38 @@ class TagBlockEngine:
                 if info.get("tag_id") == tag_id:
                     self.cancel_timer(timer_id)
 
+    async def _handle_reader_control(self, event: Event) -> None:
+        """Handle optional physical rotary encoder / button events from a TagBlock reader."""
+        command = str(event.data.get("command") or "").strip().lower()
+        device_name = event.data.get("device_name")
+        device_id = self._resolve_device_id_by_name(device_name)
+        speaker = self._resolve_speaker(TARGET_READER_DEFAULT, device_id)
+        if not speaker:
+            return
+
+        if command == "volume_up":
+            await self.hass.services.async_call(
+                "media_player", "volume_up", {"entity_id": speaker}, blocking=False
+            )
+        elif command == "volume_down":
+            await self.hass.services.async_call(
+                "media_player", "volume_down", {"entity_id": speaker}, blocking=False
+            )
+        elif command == "play_pause":
+            await self.hass.services.async_call(
+                "media_player",
+                "media_play_pause",
+                {"entity_id": speaker},
+                blocking=False,
+            )
+        elif command == "next_track":
+            await self.hass.services.async_call(
+                "media_player",
+                "media_next_track",
+                {"entity_id": speaker},
+                blocking=False,
+            )
+
     async def _async_send_mobile_notification(
         self, target: str, title: str, message: str
     ) -> None:
@@ -225,6 +279,7 @@ class TagBlockEngine:
         """Execute all actions in a tag's action list (room-aware)."""
         name = tag.get("name") or tag.get("tag_id") or "TagBlock"
         tag_id = str(tag.get("tag_id") or "").strip()
+        retap_mode = str(tag.get("retap_mode") or "restart")
         actions = tag.get("actions") or []
         if not actions and tag.get("action_type"):
             actions = [tag]
@@ -237,6 +292,7 @@ class TagBlockEngine:
                 step=step,
                 tag_name=name,
                 tag_id=tag_id,
+                retap_mode=retap_mode,
                 device_id=device_id,
             )
             if status:
@@ -254,6 +310,7 @@ class TagBlockEngine:
         step: dict[str, Any],
         tag_name: str,
         tag_id: str,
+        retap_mode: str,
         device_id: str | None,
     ) -> tuple[str, str | None]:
         """Execute one action step and return (status_text, resolved_speaker_or_none)."""
@@ -261,11 +318,34 @@ class TagBlockEngine:
         target = str(step.get("target") or "").strip()
         value = str(step.get("value") or "").strip()
         volume = int(step.get("volume") or 0)
+        shuffle = bool(step.get("shuffle", False))
+        radio_mode = bool(step.get("radio_mode", False))
+        enqueue = str(step.get("enqueue") or "replace")
 
         if action == ACTION_PLAY_MUSIC:
             speaker = self._resolve_speaker(target, device_id)
             if not speaker or not value:
                 return ("Missing speaker or music value", None)
+
+            # Re-tap Play/Pause toggle when the same tag is already active on this speaker
+            if (
+                retap_mode == RETAP_TOGGLE_PAUSE
+                and tag_id
+                and self._speaker_last_tag.get(speaker) == tag_id
+            ):
+                sp_state = self.hass.states.get(speaker)
+                if sp_state and sp_state.state in ("playing", "paused"):
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "media_play_pause",
+                        {"entity_id": speaker},
+                        blocking=False,
+                    )
+                    return (
+                        f"Toggled play/pause on {speaker.split('.')[-1]}",
+                        speaker,
+                    )
+
             if volume > 0:
                 await self.hass.services.async_call(
                     "media_player",
@@ -273,12 +353,33 @@ class TagBlockEngine:
                     {"entity_id": speaker, "volume_level": round(volume / 100, 2)},
                     blocking=True,
                 )
+
+            play_data: dict[str, Any] = {
+                "entity_id": speaker,
+                "media_id": value,
+                "enqueue": enqueue,
+            }
+            if radio_mode:
+                play_data["radio_mode"] = True
+
             await self.hass.services.async_call(
                 "music_assistant",
                 "play_media",
-                {"entity_id": speaker, "media_id": value, "enqueue": "replace"},
+                play_data,
                 blocking=False,
             )
+
+            if shuffle:
+                await self.hass.services.async_call(
+                    "media_player",
+                    "shuffle_set",
+                    {"entity_id": speaker, "shuffle": True},
+                    blocking=False,
+                )
+
+            if tag_id:
+                self._speaker_last_tag[speaker] = tag_id
+
             vol_note = f" ({volume}%)" if volume > 0 else ""
             return (f"Playing on {speaker.split('.')[-1]}{vol_note}", speaker)
 
@@ -341,6 +442,8 @@ class TagBlockEngine:
 
         if action == ACTION_ADD_GROCERY:
             list_entity = self._resolve_todo(target, device_id)
+            if not list_entity:
+                return ("Missing grocery list", None)
             item = value or tag_name
             await self.hass.services.async_call(
                 "todo",
@@ -397,12 +500,74 @@ class TagBlockEngine:
         return ("Unknown action", None)
 
 
+async def async_search_music_assistant(
+    hass: HomeAssistant, query: str, limit: int = 8
+) -> list[dict[str, str]]:
+    """Search Music Assistant library/providers and return normalized items for the UI picker."""
+    entries = hass.config_entries.async_entries("music_assistant")
+    if not entries or not query.strip():
+        return []
+
+    try:
+        resp = await hass.services.async_call(
+            "music_assistant",
+            "search",
+            {
+                "config_entry_id": entries[0].entry_id,
+                "name": query.strip(),
+                "limit": limit,
+            },
+            blocking=True,
+            return_response=True,
+        )
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Music Assistant search failed for query %s", query)
+        return []
+
+    if not isinstance(resp, dict):
+        return []
+
+    results: list[dict[str, str]] = []
+    for bucket, media_type in (
+        ("playlists", "playlist"),
+        ("albums", "album"),
+        ("tracks", "track"),
+        ("artists", "artist"),
+        ("radio", "radio"),
+    ):
+        for item in resp.get(bucket, []) or []:
+            if not isinstance(item, dict):
+                continue
+            uri = str(item.get("uri") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not uri or not name:
+                continue
+            artists = item.get("artists") or []
+            artist_str = ""
+            if isinstance(artists, list) and artists:
+                first_artist = artists[0]
+                artist_str = (
+                    first_artist.get("name", "")
+                    if isinstance(first_artist, dict)
+                    else str(first_artist)
+                )
+            results.append(
+                {
+                    "name": name,
+                    "artist": artist_str,
+                    "media_type": media_type,
+                    "uri": uri,
+                    "image": str(item.get("image") or ""),
+                }
+            )
+    return results[:20]
+
+
 def get_targets_and_readers(hass: HomeAssistant) -> dict[str, Any]:
     """Dynamically discover all HA targets and ESPHome NFC tag readers."""
     ent_reg = er.async_get(hass)
     dev_reg = dr.async_get(hass)
 
-    # 1. Media Players (prefer Music Assistant speakers, skip _screen and cast duplicates)
     ma_names: set[str] = set()
     media_players: list[dict[str, str]] = []
     other_players: list[dict[str, str]] = []
@@ -428,7 +593,6 @@ def get_targets_and_readers(hass: HomeAssistant) -> dict[str, Any]:
 
     media_players.sort(key=lambda x: x["label"].lower())
 
-    # 2. Mobile App Notify Targets
     notify_services = hass.services.async_services().get("notify", {})
     notify_targets: list[dict[str, str]] = []
     mobile_svcs = sorted(
@@ -440,7 +604,6 @@ def get_targets_and_readers(hass: HomeAssistant) -> dict[str, Any]:
         pretty = svc.removeprefix("mobile_app_").replace("_", " ").title()
         notify_targets.append({"value": f"notify.{svc}", "label": pretty})
 
-    # 3. Todo / Grocery Lists
     todo_lists = sorted(
         [
             {
@@ -452,7 +615,6 @@ def get_targets_and_readers(hass: HomeAssistant) -> dict[str, Any]:
         key=lambda x: x["label"].lower(),
     )
 
-    # 4. Alarm Panels (Alarmo)
     alarm_panels = sorted(
         [
             {
@@ -464,7 +626,6 @@ def get_targets_and_readers(hass: HomeAssistant) -> dict[str, Any]:
         key=lambda x: x["label"].lower(),
     )
 
-    # 5. Scripts & Scenes
     scripts_and_scenes: list[dict[str, str]] = []
     for domain_name in ("scene", "script"):
         for s in hass.states.async_all(domain_name):
@@ -475,7 +636,6 @@ def get_targets_and_readers(hass: HomeAssistant) -> dict[str, Any]:
             )
     scripts_and_scenes.sort(key=lambda x: x["label"].lower())
 
-    # 6. Auto-discover ALL ESPHome NFC Tag Reader devices
     readers: list[dict[str, Any]] = []
     for device in dev_reg.devices.values():
         entities = er.async_entries_for_device(ent_reg, device.id)
@@ -563,4 +723,5 @@ def get_targets_and_readers(hass: HomeAssistant) -> dict[str, Any]:
         "alarm_panels": alarm_panels,
         "scripts_and_scenes": scripts_and_scenes,
         "readers": readers,
+        "has_music_assistant": bool(hass.config_entries.async_entries("music_assistant")),
     }

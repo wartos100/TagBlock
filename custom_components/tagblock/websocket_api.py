@@ -10,7 +10,11 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
-from .engine import TagBlockEngine, get_targets_and_readers
+from .engine import (
+    TagBlockEngine,
+    async_search_music_assistant,
+    get_targets_and_readers,
+)
 from .store import TagBlockStore
 
 
@@ -50,6 +54,23 @@ def ws_get_targets(
 ) -> None:
     """Return all dynamically discovered targets and NFC tag readers."""
     connection.send_result(msg["id"], get_targets_and_readers(hass))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "tagblock/search_media",
+        vol.Required("query"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_search_media(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Search Music Assistant for playlists, albums, tracks, artists, and radio."""
+    items = await async_search_music_assistant(hass, msg["query"])
+    connection.send_result(msg["id"], {"items": items})
 
 
 @websocket_api.websocket_command(
@@ -150,6 +171,7 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     """Register all TagBlock WebSocket commands."""
     websocket_api.async_register_command(hass, ws_subscribe)
     websocket_api.async_register_command(hass, ws_get_targets)
+    websocket_api.async_register_command(hass, ws_search_media)
     websocket_api.async_register_command(hass, ws_save_tag)
     websocket_api.async_register_command(hass, ws_delete_tag)
     websocket_api.async_register_command(hass, ws_test_tag)

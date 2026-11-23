@@ -13,21 +13,16 @@ from homeassistant.helpers.storage import Store
 
 from .const import (
     ACTION_PLAY_MUSIC,
-    INITIAL_MIGRATED_TAGS,
     REMOVE_KEEP_RUNNING,
+    RETAP_RESTART,
     STORAGE_KEY,
     STORAGE_VERSION,
     TARGET_READER_DEFAULT,
     VALID_ACTIONS,
+    VALID_ENQUEUE_MODES,
     VALID_REMOVE_MODES,
+    VALID_RETAP_MODES,
 )
-
-DEFAULT_READER_CONFIGS: dict[str, dict[str, str]] = {
-    "c1b3195746f6c50c9602b2033fb12d98": {
-        "default_speaker": "media_player.living_speakers",
-        "default_todo": "todo.boodschappen",
-    }
-}
 
 
 def _normalize_action(raw: dict[str, Any]) -> dict[str, Any]:
@@ -39,11 +34,17 @@ def _normalize_action(raw: dict[str, Any]) -> dict[str, Any]:
         volume = max(0, min(100, int(raw.get("volume") or 0)))
     except (TypeError, ValueError):
         volume = 0
+    enqueue = str(raw.get("enqueue") or "replace").strip().lower()
+    if enqueue not in VALID_ENQUEUE_MODES:
+        enqueue = "replace"
     return {
         "action_type": action_type,
         "target": str(raw.get("target") or "").strip(),
         "value": str(raw.get("value") or "").strip(),
         "volume": volume,
+        "shuffle": bool(raw.get("shuffle", False)),
+        "radio_mode": bool(raw.get("radio_mode", False)),
+        "enqueue": enqueue,
     }
 
 
@@ -57,11 +58,14 @@ def _normalize_tag(payload: dict[str, Any]) -> dict[str, Any]:
     if on_remove not in VALID_REMOVE_MODES:
         on_remove = REMOVE_KEEP_RUNNING
 
+    retap_mode = str(payload.get("retap_mode") or RETAP_RESTART)
+    if retap_mode not in VALID_RETAP_MODES:
+        retap_mode = RETAP_RESTART
+
     raw_actions = payload.get("actions")
     if isinstance(raw_actions, list) and len(raw_actions) > 0:
         actions = [_normalize_action(a) for a in raw_actions if isinstance(a, dict)]
     else:
-        # Backwards-compatible fallback for single-action payloads
         actions = [
             _normalize_action(
                 {
@@ -69,6 +73,9 @@ def _normalize_tag(payload: dict[str, Any]) -> dict[str, Any]:
                     "target": payload.get("target", TARGET_READER_DEFAULT),
                     "value": payload.get("value", ""),
                     "volume": payload.get("volume", 0),
+                    "shuffle": payload.get("shuffle", False),
+                    "radio_mode": payload.get("radio_mode", False),
+                    "enqueue": payload.get("enqueue", "replace"),
                 }
             )
         ]
@@ -81,6 +88,7 @@ def _normalize_tag(payload: dict[str, Any]) -> dict[str, Any]:
         "tag_id": tag_id,
         "name": name,
         "on_remove": on_remove,
+        "retap_mode": retap_mode,
         "reader_filter": str(payload.get("reader_filter") or "").strip(),
         "actions": actions,
     }
@@ -102,11 +110,11 @@ class TagBlockStore:
         self.active_timers: dict[str, dict[str, Any]] = {}
 
     async def async_load(self) -> None:
-        """Load stored tags & reader configs, or seed defaults on first run."""
+        """Load stored tags & reader configs."""
         data = await self._store.async_load()
         if data is None:
-            self._tags = deepcopy(INITIAL_MIGRATED_TAGS)
-            self._reader_configs = deepcopy(DEFAULT_READER_CONFIGS)
+            self._tags = []
+            self._reader_configs = {}
             await self._async_persist()
         else:
             self._tags = [_normalize_tag(t) for t in data.get("tags", [])]

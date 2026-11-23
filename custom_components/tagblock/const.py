@@ -8,7 +8,7 @@ PANEL_URL = "tagblock"
 PANEL_TITLE = "TagBlock"
 PANEL_ICON = "mdi:nfc-variant"
 STATIC_URL = "/tagblock_static"
-FRONTEND_VERSION = "1.0.0"
+FRONTEND_VERSION = "1.1.0"
 
 TARGET_READER_DEFAULT = "reader_default"
 
@@ -46,36 +46,14 @@ VALID_REMOVE_MODES = {
     REMOVE_CANCEL_TIMER,
 }
 
-# Pre-seeded with your 2 existing tags migrated cleanly into multi-action format
-INITIAL_MIGRATED_TAGS = [
-    {
-        "id": "migrated-1",
-        "tag_id": "6E-E2-3E-00",
-        "name": "Boodschappen - Melk",
-        "on_remove": REMOVE_KEEP_RUNNING,
-        "reader_filter": "",
-        "actions": [
-            {
-                "action_type": ACTION_ADD_GROCERY,
-                "target": "todo.boodschappen",
-                "value": "Melk",
-                "volume": 0,
-            }
-        ],
-    },
-    {
-        "id": "migrated-2",
-        "tag_id": "9A-7C-40-05",
-        "name": "Music",
-        "on_remove": REMOVE_PAUSE_MUSIC,
-        "reader_filter": "",
-        "actions": [
-            {
-                "action_type": ACTION_PLAY_MUSIC,
-                "target": TARGET_READER_DEFAULT,
-                "value": "https://open.spotify.com/playlist/37i9dQZF1DX3WdioUzkg8I?si=9e6338001a8d47be",
-                "volume": 5,
-            }
-        ],
-    },
-]
+RETAP_RESTART = "restart"
+RETAP_TOGGLE_PAUSE = "toggle_pause"
+
+VALID_RETAP_MODES = {
+    RETAP_RESTART,
+    RETAP_TOGGLE_PAUSE,
+}
+
+VALID_ENQUEUE_MODES = {"replace", "add", "next", "play"}
+
+SCAN_DEBOUNCE_SECONDS = 2.0

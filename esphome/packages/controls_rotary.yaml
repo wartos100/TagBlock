@@ -1,0 +1,62 @@
+# =============================================================================
+# Optional Physical Media Controls Package for TagBlock (Rotary Encoder + Button)
+#
+# Automatically controls the reader's configured "Default Speaker" in TagBlock
+# via `esphome.tagblock_control` events (no Home Assistant automations needed!).
+#
+# Required substitutions in your room YAML:
+#   rotary_pin_a, rotary_pin_b, rotary_btn_pin
+# =============================================================================
+
+sensor:
+  - platform: rotary_encoder
+    name: "Volume Dial"
+    id: volume_dial
+    pin_a:
+      number: ${rotary_pin_a}
+      mode: INPUT_PULLUP
+    pin_b:
+      number: ${rotary_pin_b}
+      mode: INPUT_PULLUP
+    resolution: 2
+    on_clockwise:
+      - homeassistant.event:
+          event: esphome.tagblock_control
+          data:
+            command: volume_up
+            device_name: "${name}"
+    on_anticlockwise:
+      - homeassistant.event:
+          event: esphome.tagblock_control
+          data:
+            command: volume_down
+            device_name: "${name}"
+
+binary_sensor:
+  - platform: gpio
+    name: "Dial Button"
+    id: dial_button
+    pin:
+      number: ${rotary_btn_pin}
+      mode: INPUT_PULLUP
+      inverted: true
+    on_multi_click:
+      - timing:
+          - ON for at most 400ms
+          - OFF for at least 300ms
+        then:
+          - homeassistant.event:
+              event: esphome.tagblock_control
+              data:
+                command: play_pause
+                device_name: "${name}"
+      - timing:
+          - ON for at most 400ms
+          - OFF for at most 300ms
+          - ON for at most 400ms
+        then:
+          - homeassistant.event:
+              event: esphome.tagblock_control
+              data:
+                command: next_track
+                device_name: "${name}"
