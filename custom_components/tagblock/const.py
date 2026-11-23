@@ -8,7 +8,7 @@ PANEL_URL = "tagblock"
 PANEL_TITLE = "TagBlock"
 PANEL_ICON = "mdi:nfc-variant"
 STATIC_URL = "/tagblock_static"
-FRONTEND_VERSION = "0.1.0"
+FRONTEND_VERSION = "1.0.0"
 
 TARGET_READER_DEFAULT = "reader_default"
 
