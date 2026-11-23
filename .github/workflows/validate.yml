@@ -17,6 +17,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
 
+  pytest:
+    name: Unit Tests (HA Core Compatibility)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: pip install -r requirements_test.txt
+      - name: Run TagBlock unit tests
+        run: pytest -v
+
   hacs:
     name: HACS Validation
     runs-on: ubuntu-latest
@@ -39,6 +52,6 @@ jobs:
         with:
           node-version: "22"
       - name: Check Python files
-        run: python -m py_compile custom_components/tagblock/*.py
+        run: python -m py_compile custom_components/tagblock/*.py tests/*.py
       - name: Check Frontend JS
         run: node --check custom_components/tagblock/frontend/tagblock-panel.js
