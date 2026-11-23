@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.tagblock import async_setup_entry, async_unload_entry
 from custom_components.tagblock.const import (
@@ -99,39 +102,33 @@ async def test_room_aware_music_and_hold_to_play_remove(hass):
         }
     )
 
+    vol_calls = async_mock_service(hass, "media_player", "volume_set")
+    play_calls = async_mock_service(hass, "music_assistant", "play_media")
+    pause_calls = async_mock_service(hass, "media_player", "media_pause")
+
     engine = TagBlockEngine(hass, store)
-    calls: list[tuple[str, str, dict]] = []
 
-    async def _fake_call(domain, service, data=None, blocking=False):
-        calls.append((domain, service, dict(data or {})))
+    await engine.async_execute_tag(tag, device_id="reader_kitchen")
+    await hass.async_block_till_done()
 
-    with patch.object(hass.services, "async_call", side_effect=_fake_call):
-        await engine.async_execute_tag(tag, device_id="reader_kitchen")
-        assert (
-            "media_player",
-            "volume_set",
-            {"entity_id": "media_player.kitchen_speakers", "volume_level": 0.4},
-        ) in calls
-        assert (
-            "music_assistant",
-            "play_media",
-            {
-                "entity_id": "media_player.kitchen_speakers",
-                "media_id": "spotify://playlist/jazz",
-                "enqueue": "replace",
-            },
-        ) in calls
+    assert len(vol_calls) == 1
+    assert vol_calls[0].data == {
+        "entity_id": "media_player.kitchen_speakers",
+        "volume_level": 0.4,
+    }
+    assert len(play_calls) == 1
+    assert play_calls[0].data == {
+        "entity_id": "media_player.kitchen_speakers",
+        "media_id": "spotify://playlist/jazz",
+        "enqueue": "replace",
+    }
 
-        calls.clear()
-        engine.start()
-        hass.bus.async_fire("esphome.tagblock_tag_removed", {"tag_id": "11-22-33-44"})
-        await hass.async_block_till_done()
-        assert (
-            "media_player",
-            "media_pause",
-            {"entity_id": "media_player.kitchen_speakers"},
-        ) in calls
-        engine.stop()
+    engine.start()
+    hass.bus.async_fire("esphome.tagblock_tag_removed", {"tag_id": "11-22-33-44"})
+    await hass.async_block_till_done()
+    assert len(pause_calls) == 1
+    assert pause_calls[0].data == {"entity_id": "media_player.kitchen_speakers"}
+    engine.stop()
 
 
 async def test_combo_alarmo_grocery_and_timer(hass):
@@ -140,10 +137,9 @@ async def test_combo_alarmo_grocery_and_timer(hass):
     await store.async_load()
     engine = TagBlockEngine(hass, store)
 
-    calls: list[tuple[str, str, dict]] = []
-
-    async def _fake_call(domain, service, data=None, blocking=False):
-        calls.append((domain, service, dict(data or {})))
+    todo_calls = async_mock_service(hass, "todo", "add_item")
+    arm_calls = async_mock_service(hass, "alarmo", "arm")
+    disarm_calls = async_mock_service(hass, "alarmo", "disarm")
 
     tag = await store.async_save_tag(
         {
@@ -179,24 +175,19 @@ async def test_combo_alarmo_grocery_and_timer(hass):
         }
     )
 
-    with patch.object(hass.services, "async_call", side_effect=_fake_call):
-        await engine.async_execute_tag(tag)
+    await engine.async_execute_tag(tag)
+    await hass.async_block_till_done()
 
-    assert (
-        "todo",
-        "add_item",
-        {"entity_id": "todo.boodschappen", "item": "Brood"},
-    ) in calls
-    assert (
-        "alarmo",
-        "arm",
-        {"entity_id": "alarm_control_panel.home", "mode": "away", "code": "1234"},
-    ) in calls
-    assert (
-        "alarmo",
-        "disarm",
-        {"entity_id": "alarm_control_panel.home"},
-    ) in calls
+    assert len(todo_calls) == 1
+    assert todo_calls[0].data == {"entity_id": "todo.boodschappen", "item": "Brood"}
+    assert len(arm_calls) == 1
+    assert arm_calls[0].data == {
+        "entity_id": "alarm_control_panel.home",
+        "mode": "away",
+        "code": "1234",
+    }
+    assert len(disarm_calls) == 1
+    assert disarm_calls[0].data == {"entity_id": "alarm_control_panel.home"}
     assert len(store.active_timers) == 1
 
     timer_id = next(iter(store.active_timers))
@@ -213,8 +204,12 @@ async def test_setup_and_unload_entry(hass):
     hass.http.async_register_static_paths = AsyncMock()
 
     with (
-        patch("custom_components.tagblock.frontend.async_register_built_in_panel") as mock_reg_panel,
-        patch("custom_components.tagblock.frontend.async_remove_panel") as mock_rm_panel,
+        patch(
+            "homeassistant.components.frontend.async_register_built_in_panel"
+        ) as mock_reg_panel,
+        patch(
+            "homeassistant.components.frontend.async_remove_panel"
+        ) as mock_rm_panel,
     ):
         assert await async_setup_entry(hass, entry) is True
         assert DOMAIN in hass.data
