@@ -1,0 +1,44 @@
+name: Validate TagBlock
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Run monthly to catch upcoming Home Assistant Core breaking changes early
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    name: Home Assistant Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          ignore: brands
+
+  syntax:
+    name: Python & Frontend Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check Python files
+        run: python -m py_compile custom_components/tagblock/*.py
+      - name: Check Frontend JS
+        run: node --check custom_components/tagblock/frontend/tagblock-panel.js

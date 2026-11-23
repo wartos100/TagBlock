@@ -1,0 +1,15 @@
+# WS2812B Addressable RGB LED Ring/Strip package for TagBlock
+# Set `led_count` in your room YAML substitutions (e.g. 12 for a 12-LED ring).
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    name: "Status LED"
+    rgb_order: GRB
+    pin: ${led_pin}
+    num_leds: ${led_count}
+    chipset: ws2812
+    effects:
+      - pulse:
+          name: "Timer Pulse"
+          transition_length: 0.5s
+          update_interval: 0.5s

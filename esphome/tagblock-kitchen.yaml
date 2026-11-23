@@ -1,0 +1,21 @@
+# =============================================================================
+# TagBlock — Kitchen Wooden Block (Template for 2nd Reader)
+# Hardware: ESP32 (esp32dev) + PN532 (I2C) + Passive Buzzer + 12-LED WS2812B Ring
+#
+# Duplicate this file for Bedroom, Workshop, etc. — each new reader adopted in
+# Home Assistant automatically appears in the TagBlock UI's "Tag Readers" tab!
+# =============================================================================
+
+substitutions:
+  name: tagblock-kitchen
+  friendly_name: TagBlock Kitchen
+  board: esp32dev
+  i2c_sda_pin: GPIO21
+  i2c_scl_pin: GPIO22
+  buzzer_pin: GPIO25
+  led_pin: GPIO26
+  led_count: "12"
+
+packages:
+  base: !include packages/tagblock_base.yaml
+  led: !include packages/led_ws2812.yaml

@@ -1,0 +1,12 @@
+{
+  "domain": "tagblock",
+  "name": "TagBlock",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "websocket_api", "tag"],
+  "documentation": "https://github.com/wartos100/TagBlock",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/wartos100/TagBlock/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

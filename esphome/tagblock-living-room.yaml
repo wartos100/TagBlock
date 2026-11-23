@@ -1,0 +1,20 @@
+# =============================================================================
+# TagBlock — Living Room Reader
+# Hardware: ESP32 (esp32dev) + PN532 (I2C) + Passive Buzzer + Single-Color LED
+#
+# BEFORE FLASHING: Verify the 4 GPIO pins below against your existing YAML in
+# ESPHome Device Builder.
+# =============================================================================
+
+substitutions:
+  name: living-room-tag-reader-83bffc
+  friendly_name: TagBlock Living Room
+  board: esp32dev
+  i2c_sda_pin: GPIO21
+  i2c_scl_pin: GPIO22
+  buzzer_pin: GPIO13
+  led_pin: GPIO2
+
+packages:
+  base: !include packages/tagblock_base.yaml
+  led: !include packages/led_binary.yaml

@@ -1,0 +1,11 @@
+# Single-color on/off Status LED package for TagBlock
+output:
+  - platform: gpio
+    pin: ${led_pin}
+    id: led_output
+
+light:
+  - platform: binary
+    name: "Status LED"
+    id: status_led
+    output: led_output

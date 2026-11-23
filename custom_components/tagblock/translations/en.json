@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up TagBlock",
+        "description": "Adds the TagBlock room-aware NFC manager panel to your Home Assistant sidebar with unlimited multi-action tag mappings and multi-reader support."
+      }
+    },
+    "abort": {
+      "already_configured": "TagBlock is already configured."
+    }
+  }
+}

@@ -1,0 +1,348 @@
+# =============================================================================
+# TagBlock Shared ESPHome Base Package
+# Include this in each room's YAML alongside either `led_binary.yaml` or
+# `led_ws2812.yaml`.
+#
+# Required substitutions in the room YAML:
+#   name, friendly_name, board, i2c_sda_pin, i2c_scl_pin, buzzer_pin, led_pin
+# =============================================================================
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  project:
+    name: tagblock.nfc_reader
+    version: "1.0.0"
+  on_boot:
+    priority: -10
+    then:
+      - wait_until:
+          api.connected:
+      - logger.log: "TagBlock connected to Home Assistant!"
+      - if:
+          condition:
+            switch.is_on: buzzer_enabled
+          then:
+            - rtttl.play: "boot:d=16,o=5,b=140:c,e,g,c6"
+      - if:
+          condition:
+            switch.is_on: led_enabled
+          then:
+            - light.turn_on: status_led
+            - delay: 300ms
+            - light.turn_off: status_led
+
+esp32:
+  board: ${board}
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret tagblock_api_key
+  actions:
+    - action: play_rtttl
+      variables:
+        song_str: string
+      then:
+        - if:
+            condition:
+              switch.is_on: buzzer_enabled
+            then:
+              - rtttl.play: !lambda "return song_str;"
+
+    - action: tag_ok
+      then:
+        - if:
+            condition:
+              switch.is_on: buzzer_enabled
+            then:
+              - rtttl.play: "ok:d=16,o=5,b=160:c,e,g"
+        - if:
+            condition:
+              switch.is_on: led_enabled
+            then:
+              - light.turn_on: status_led
+              - delay: 350ms
+              - light.turn_off: status_led
+
+    - action: tag_unknown
+      then:
+        - if:
+            condition:
+              switch.is_on: buzzer_enabled
+            then:
+              - rtttl.play: "unknown:d=16,o=4,b=140:g,p,e"
+        - if:
+            condition:
+              switch.is_on: led_enabled
+            then:
+              - light.turn_on: status_led
+              - delay: 150ms
+              - light.turn_off: status_led
+              - delay: 150ms
+              - light.turn_on: status_led
+              - delay: 150ms
+              - light.turn_off: status_led
+
+    - action: tag_timer_done
+      then:
+        - if:
+            condition:
+              switch.is_on: buzzer_enabled
+            then:
+              - rtttl.play: "timer:d=8,o=5,b=160:c,e,g,c6,p,c,e,g,c6"
+        - if:
+            condition:
+              switch.is_on: led_enabled
+            then:
+              - repeat:
+                  count: 4
+                  then:
+                    - light.turn_on: status_led
+                    - delay: 200ms
+                    - light.turn_off: status_led
+                    - delay: 200ms
+
+    - action: write_tag_id
+      variables:
+        tag_id: string
+      then:
+        - lambda: |-
+            id(pending_write_tag_id) = tag_id;
+            id(write_mode) = true;
+            id(clean_mode) = false;
+        - logger.log:
+            format: "Ready to write tag ID '%s' — tap a tag on the reader."
+            args: ['tag_id.c_str()']
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+globals:
+  - id: active_tag_id
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: write_mode
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: clean_mode
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: pending_write_tag_id
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+
+# PN532 DIP switches for I2C mode: Switch 1 ON, Switch 2 OFF
+i2c:
+  id: bus_a
+  sda: ${i2c_sda_pin}
+  scl: ${i2c_scl_pin}
+  scan: true
+  frequency: 100kHz
+
+pn532_i2c:
+  id: pn532_board
+  i2c_id: bus_a
+  update_interval: 500ms
+  on_tag:
+    then:
+      - if:
+          condition:
+            lambda: "return id(clean_mode);"
+          then:
+            - lambda: |-
+                ESP_LOGI("tagblock", "Cleaning tag...");
+                id(pn532_board)->clean_tag();
+                id(clean_mode) = false;
+            - if:
+                condition:
+                  switch.is_on: buzzer_enabled
+                then:
+                  - rtttl.play: "clean:d=16,o=5,b=140:g,e,c"
+          else:
+            - if:
+                condition:
+                  lambda: "return id(write_mode);"
+                then:
+                  - lambda: |-
+                      ESP_LOGI("tagblock", "Writing tag ID: %s", id(pending_write_tag_id).c_str());
+                      auto message = new nfc::NdefMessage();
+                      std::string uri = "https://www.home-assistant.io/tag/" + id(pending_write_tag_id);
+                      message->add_uri_record(uri);
+                      id(pn532_board)->write_tag(message);
+                      id(write_mode) = false;
+                      id(pending_write_tag_id) = "";
+                  - if:
+                      condition:
+                        switch.is_on: buzzer_enabled
+                      then:
+                        - rtttl.play: "written:d=16,o=5,b=160:c,e,g,c6"
+                else:
+                  - lambda: |-
+                      std::string resolved_id = x;
+                      if (tag.has_ndef_message()) {
+                        auto message = tag.get_ndef_message();
+                        for (auto &record : message->get_records()) {
+                          std::string payload = record->get_payload();
+                          size_t pos = payload.rfind("https://www.home-assistant.io/tag/");
+                          if (pos != std::string::npos) {
+                            resolved_id = payload.substr(pos + 34);
+                            break;
+                          }
+                        }
+                      }
+                      id(active_tag_id) = resolved_id;
+                      id(tagblock_active_tag).publish_state(resolved_id);
+                      id(tagblock_tag_present).publish_state(true);
+                  - homeassistant.tag_scanned: !lambda "return id(active_tag_id);"
+                  - if:
+                      condition:
+                        switch.is_on: buzzer_enabled
+                      then:
+                        - rtttl.play: "scan:d=32,o=5,b=160:c,g"
+                  - if:
+                      condition:
+                        switch.is_on: led_enabled
+                      then:
+                        - light.turn_on: status_led
+                        - delay: 250ms
+                        - light.turn_off: status_led
+
+  on_tag_removed:
+    then:
+      - logger.log:
+          format: "Tag removed: %s"
+          args: ['id(active_tag_id).c_str()']
+      - homeassistant.event:
+          event: esphome.tagblock_tag_removed
+          data:
+            tag_id: !lambda "return id(active_tag_id).empty() ? x : id(active_tag_id);"
+            device_name: "${name}"
+      - lambda: |-
+          id(active_tag_id) = "";
+          id(tagblock_active_tag).publish_state("");
+          id(tagblock_tag_present).publish_state(false);
+      - if:
+          condition:
+            and:
+              - switch.is_on: buzzer_enabled
+              - switch.is_on: remove_sound_enabled
+          then:
+            - rtttl.play: "removed:d=32,o=5,b=160:g,c"
+
+output:
+  - platform: ledc
+    pin: ${buzzer_pin}
+    id: buzzer_output
+
+rtttl:
+  id: my_rtttl
+  output: buzzer_output
+
+switch:
+  - platform: template
+    name: "Buzzer Enabled"
+    id: buzzer_enabled
+    icon: mdi:volume-high
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  - platform: template
+    name: "LED Enabled"
+    id: led_enabled
+    icon: mdi:alarm-light-outline
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  - platform: template
+    name: "Remove Sound Enabled"
+    id: remove_sound_enabled
+    icon: mdi:nfc-variant-off
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+button:
+  - platform: template
+    name: "Write Tag Random"
+    icon: mdi:pencil-box
+    on_press:
+      - lambda: |-
+          char buf[16];
+          snprintf(buf, sizeof(buf), "tb-%08x", (unsigned int) esp_random());
+          id(pending_write_tag_id) = std::string(buf);
+          id(write_mode) = true;
+          id(clean_mode) = false;
+      - logger.log:
+          format: "Ready to write random tag ID '%s' — tap a tag on the reader."
+          args: ['id(pending_write_tag_id).c_str()']
+
+  - platform: template
+    name: "Clean Tag"
+    icon: mdi:nfc-variant-off
+    on_press:
+      - lambda: |-
+          id(clean_mode) = true;
+          id(write_mode) = false;
+
+  - platform: template
+    name: "Cancel Writing"
+    icon: mdi:pencil-off
+    on_press:
+      - lambda: |-
+          id(write_mode) = false;
+          id(clean_mode) = false;
+          id(pending_write_tag_id) = "";
+
+  - platform: restart
+    name: "Restart"
+    entity_category: config
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Tag Present"
+    id: tagblock_tag_present
+    icon: mdi:nfc
+    device_class: presence
+
+text_sensor:
+  - platform: template
+    name: "Active Tag"
+    id: tagblock_active_tag
+    icon: mdi:tag-text
+
+  - platform: version
+    name: "ESPHome Version"
+    icon: mdi:new-box
+    entity_category: diagnostic
+
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      entity_category: diagnostic
+    ssid:
+      name: "Connected SSID"
+      entity_category: diagnostic
